@@ -1,23 +1,21 @@
+const ADMIN_REPO = "richardmukechiwa/morningsidezw-site";
+const ADMIN_BRANCH = "main";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1️⃣ Serve /admin/ from GitHub Pages
-    if (url.pathname.startsWith("/admin")) {
-      const ghPagesBase = "https://richardmukechiwa.github.io/morningsidezw-site";
-      const targetUrl = ghPagesBase + url.pathname;
-      return Response.redirect(targetUrl, 302);
-    }
-
-    // 2️⃣ Start OAuth
+    // --- OAuth Start ---
     if (url.pathname === "/auth") {
       const redirect = `https://github.com/login/oauth/authorize?client_id=${env.GITHUB_CLIENT_ID}&scope=repo,user&redirect_uri=${url.origin}/callback`;
       return Response.redirect(redirect, 302);
     }
 
-    // 3️⃣ OAuth callback
+    // --- OAuth Callback ---
     if (url.pathname === "/callback") {
       const code = url.searchParams.get("code");
+      if (!code) return new Response("Missing code", { status: 400 });
+
       const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "application/json" },
@@ -28,10 +26,35 @@ export default {
         })
       });
       const tokenData = await tokenRes.json();
-      return new Response(JSON.stringify(tokenData), { headers: { "Content-Type": "application/json" } });
+      if (!tokenData.access_token) return new Response("Failed to get token", { status: 500 });
+
+      // Set secure cookie for admin
+      const headers = new Headers({ "Location": "/admin" });
+      headers.append("Set-Cookie", `gh_token=${tokenData.access_token}; Path=/; HttpOnly; Secure; SameSite=Lax`);
+      return new Response(null, { status: 302, headers });
     }
 
-    // 4️⃣ Default response
+    // --- Serve Admin Files ---
+    if (url.pathname.startsWith("/admin")) {
+      // map /admin/ -> /admin/index.html if folder access
+      const path = url.pathname.endsWith("/") ? "/admin/index.html" : url.pathname;
+
+      // fetch raw content from GitHub
+      const rawUrl = `https://raw.githubusercontent.com/${ADMIN_REPO}/${ADMIN_BRANCH}${path}`;
+      const resp = await fetch(rawUrl);
+      if (!resp.ok) return new Response("Not Found", { status: 404 });
+
+      // determine content type
+      let contentType = "text/html";
+      if (path.endsWith(".css")) contentType = "text/css";
+      if (path.endsWith(".js")) contentType = "application/javascript";
+      if (path.endsWith(".png")) contentType = "image/png";
+      if (path.endsWith(".jpg") || path.endsWith(".jpeg")) contentType = "image/jpeg";
+
+      return new Response(await resp.arrayBuffer(), { headers: { "Content-Type": contentType } });
+    }
+
+    // --- Default ---
     return new Response("OAuth proxy running.");
   }
 };
